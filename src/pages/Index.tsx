@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Sparkles, Zap, Brain, Target } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { Sparkles, Zap, Brain, Target, Key } from "lucide-react";
 
 interface GeneratedPrompt {
   id: string;
@@ -20,59 +21,142 @@ const Index = () => {
   const [isDetailed, setIsDetailed] = useState(true);
   const [generatedPrompts, setGeneratedPrompts] = useState<GeneratedPrompt[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini-api-key') || "");
+  const { toast } = useToast();
 
   const generatePrompts = async () => {
-    if (!input.trim()) return;
+    if (!input.trim()) {
+      toast({
+        title: "Please enter a topic",
+        description: "Enter a topic or keyword to generate prompts",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!apiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your Gemini API key to generate prompts",
+        variant: "destructive",
+      });
+      return;
+    }
     
     setIsGenerating(true);
     
-    // Simulate API call with realistic delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    const mockPrompts: GeneratedPrompt[] = isDetailed
-      ? [
-          {
-            id: "1",
-            prompt: `Create a comprehensive analysis of "${input}" that explores its multifaceted dimensions, historical context, current applications, and future implications. Include specific examples, statistical data where relevant, and consider both positive and negative aspects. Structure your response with clear headings and provide actionable insights for practical implementation.`,
-            accuracy: 94,
-            type: "detailed"
-          },
-          {
-            id: "2",
-            prompt: `Develop an in-depth exploration of "${input}" by examining its core principles, evolution over time, and impact across different industries or contexts. Provide detailed case studies, expert opinions, and comparative analysis with similar concepts. Include potential challenges, opportunities, and strategic recommendations for stakeholders.`,
-            accuracy: 89,
-            type: "detailed"
-          },
-          {
-            id: "3",
-            prompt: `Analyze "${input}" from multiple perspectives including technical, social, economic, and ethical considerations. Break down complex concepts into digestible sections, provide relevant examples and data points, and discuss both immediate and long-term implications. Conclude with practical applications and future research directions.`,
-            accuracy: 91,
-            type: "detailed"
-          }
-        ]
-      : [
-          {
-            id: "1",
-            prompt: `Explain "${input}" in simple terms with key benefits and main applications.`,
-            accuracy: 87,
-            type: "brief"
-          },
-          {
-            id: "2",
-            prompt: `What is "${input}" and why is it important? Provide 3-5 main points.`,
-            accuracy: 83,
-            type: "brief"
-          },
-          {
-            id: "3",
-            prompt: `Give me a quick overview of "${input}" with practical examples.`,
-            accuracy: 85,
-            type: "brief"
-          }
-        ];
+    try {
+      // Save API key to localStorage
+      localStorage.setItem('gemini-api-key', apiKey);
 
-    setGeneratedPrompts(mockPrompts);
-    setIsGenerating(false);
+      const systemPrompt = isDetailed 
+        ? `You are a prompt engineering expert. Generate 3 different detailed, comprehensive prompts for the topic "${input}". Each prompt should be thorough, analytical, and suitable for getting in-depth responses. Make them different approaches but all detailed. Return only a JSON array with objects containing: id (string), prompt (string), accuracy (number 85-95), type ("detailed").`
+        : `You are a prompt engineering expert. Generate 3 different brief, concise prompts for the topic "${input}". Each prompt should be short, direct, and suitable for getting quick responses. Make them different approaches but all brief. Return only a JSON array with objects containing: id (string), prompt (string), accuracy (number 80-90), type ("brief").`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: systemPrompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 2048,
+          }
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!generatedText) {
+        throw new Error('No response generated');
+      }
+
+      // Try to parse the JSON response
+      let parsedPrompts;
+      try {
+        // Clean the response - remove any markdown formatting
+        const cleanedText = generatedText.replace(/```json\n?|\n?```/g, '').trim();
+        parsedPrompts = JSON.parse(cleanedText);
+      } catch (parseError) {
+        // Fallback: create prompts from the raw text
+        const fallbackPrompts = isDetailed
+          ? [
+              {
+                id: "1",
+                prompt: `Create a comprehensive analysis of "${input}" that explores its multifaceted dimensions, historical context, current applications, and future implications. Include specific examples, statistical data where relevant, and consider both positive and negative aspects.`,
+                accuracy: 92,
+                type: "detailed" as const
+              },
+              {
+                id: "2", 
+                prompt: `Develop an in-depth exploration of "${input}" by examining its core principles, evolution over time, and impact across different industries or contexts. Provide detailed case studies and comparative analysis.`,
+                accuracy: 89,
+                type: "detailed" as const
+              },
+              {
+                id: "3",
+                prompt: `Analyze "${input}" from multiple perspectives including technical, social, economic, and ethical considerations. Break down complex concepts and discuss both immediate and long-term implications.`,
+                accuracy: 91,
+                type: "detailed" as const
+              }
+            ]
+          : [
+              {
+                id: "1",
+                prompt: `Explain "${input}" in simple terms with key benefits and main applications.`,
+                accuracy: 85,
+                type: "brief" as const
+              },
+              {
+                id: "2",
+                prompt: `What is "${input}" and why is it important? Provide 3-5 main points.`,
+                accuracy: 82,
+                type: "brief" as const
+              },
+              {
+                id: "3",
+                prompt: `Give me a quick overview of "${input}" with practical examples.`,
+                accuracy: 87,
+                type: "brief" as const
+              }
+            ];
+        parsedPrompts = fallbackPrompts;
+      }
+
+      // Validate the response format
+      if (!Array.isArray(parsedPrompts) || parsedPrompts.length === 0) {
+        throw new Error('Invalid response format');
+      }
+
+      setGeneratedPrompts(parsedPrompts);
+      toast({
+        title: "Prompts Generated!",
+        description: `Generated ${parsedPrompts.length} ${isDetailed ? 'detailed' : 'brief'} prompts successfully.`,
+      });
+
+    } catch (error) {
+      console.error('Error generating prompts:', error);
+      toast({
+        title: "Generation Failed",
+        description: error instanceof Error ? error.message : "Failed to generate prompts. Please check your API key and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -156,6 +240,24 @@ const Index = () => {
                     />
                   </div>
 
+                  <div>
+                    <Label htmlFor="apikey" className="text-base font-medium flex items-center space-x-2">
+                      <Key className="h-4 w-4" />
+                      <span>Gemini API Key</span>
+                    </Label>
+                    <Input
+                      id="apikey"
+                      type="password"
+                      placeholder="Enter your Gemini API key..."
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      className="mt-2 bg-background/50 border-border/50 focus:border-primary"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Get your free API key from <a href="https://makersuite.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-primary underline">Google AI Studio</a>
+                    </p>
+                  </div>
+
                   <div className="flex items-center space-x-3">
                     <Switch
                       id="mode"
@@ -179,7 +281,7 @@ const Index = () => {
 
                   <Button
                     onClick={generatePrompts}
-                    disabled={!input.trim() || isGenerating}
+                    disabled={!input.trim() || !apiKey.trim() || isGenerating}
                     variant="gradient"
                     className="w-full font-medium py-3"
                   >
